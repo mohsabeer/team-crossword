@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Team Crossword — React UI</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="/styles.css" />
+  <!-- React via CDN (prototype) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    function App() {
+      const [inputText, setInputText] = useState(`[
+  "Alice Johnson, Senior Dev, Python expert, ext 4421",
+  "Bob Smith, Product Manager, ext 4410",
+  "Cara-Lynn O'Leary, QA Lead, Selenium, ext 4430",
+  {"name":"Dan Rivera","title":"Designer","skills":["Figma","Illustrator"], "phone":"ext 4444"},
+  "Eve, Data Scientist, ML, ext 4455"
+]`);
+      const [puzzle, setPuzzle] = useState(null);
+      const [entries, setEntries] = useState(null);
+      const [selected, setSelected] = useState({ r: 0, c: 0 });
+      const [activeDir, setActiveDir] = useState('across');
+      const [numbering, setNumbering] = useState({});
+      const [wordMap, setWordMap] = useState({});
+      const [checkMode, setCheckMode] = useState(null);
+      const gridRef = useRef(null);
+
+      const parseAndGenerate = async () => {
+        let parsed;
+        try {
+          parsed = JSON.parse(inputText);
+        } catch (err) {
+          alert('Invalid JSON. The input must be a JSON array of strings or objects.');
+          return;
+        }
+        const res = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ records: parsed })
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          alert('Server error: ' + (data.error || 'unknown'));
+          return;
+        }
+        const puz = data.puzzle;
+        setPuzzle(puz);
+
+        const initial = puz.grid.map(row => row.map(cell => (cell === null ? null : '')));
+        setEntries(initial);
+        setCheckMode(null);
+
+        const startCells = new Set();
+        for (const p of puz.placed) startCells.add(`${p.row},${p.col}`);
+        const numberingMap = {};
+        let num = 1;
+        for (let r = 0; r < puz.size; r++) {
+          for (let c = 0; c < puz.size; c++) {
+            const cell = puz.grid[r][c];
+            if (!cell) continue;
+            if (startCells.has(`${r},${c}`)) {
+              numberingMap[`${r},${c}`] = num++;
+            }
+          }
+        }
+        setNumbering(numberingMap);
+
+        const wmap = {};
+        for (const p of puz.placed) {
+          const n = numberingMap[`${p.row},${p.col}`] || null;
+          wmap[`${p.row},${p.col},${p.dir}`] = n;
+        }
+        setWordMap(wmap);
+
+        const firstKey = Object.keys(numberingMap)[0];
+        if (firstKey) {
+          const [r, c] = firstKey.split(',').map(Number);
+          setSelected({ r, c });
+        } else setSelected({ r: 0, c: 0 });
+        setActiveDir('across');
+      };
+
+      useEffect(() => {
+        if (!puzzle) return;
+        setTimeout(() => {
+          if (!gridRef.current) return;
+          const el = gridRef.current.querySelector('input[data-r][data-c]');
+          if (el) el.focus();
+        }, 50);
+      }, [puzzle]);
+
+      const onKeyDownCell = (e, r, c) => {
+        if (!puzzle) return;
+        const key = e.key;
+        if (key === 'ArrowRight') { e.preventDefault(); moveCursor(r,c,'right'); return; }
+        if (key === 'ArrowLeft') { e.preventDefault(); moveCursor(r,c,'left'); return; }
+        if (key === 'ArrowUp') { e.preventDefault(); moveCursor(r,c,'up'); return; }
+        if (key === 'ArrowDown') { e.preventDefault(); moveCursor(r,c,'down'); return; }
+        if (key === 'Enter') { e.preventDefault(); setActiveDir(prev => prev === 'across' ? 'down' : 'across'); return; }
+        if (key === 'Tab') { setActiveDir('across'); return; }
+        if (key === 'Backspace' || key === 'Delete') {
+          e.preventDefault(); updateEntry(r,c,''); if (key === 'Backspace') moveCursor(r,c, activeDir === 'across' ? 'left' : 'up'); return;
+        }
+        if (/^[a-zA-Z]$/.test(key)) {
+          e.preventDefault(); const upper = key.toUpperCase(); updateEntry(r,c,upper); if (activeDir === 'across') moveCursor(r,c,'right'); else moveCursor(r,c,'down');
+        }
+      };
+
+      function moveCursor(r,c,dir) {
+        if (!puzzle) return;
+        const size = puzzle.size;
+        let nr = r, nc = c;
+        const stepToNextNonBlock = (sr, sc, dr, dc) => {
+          let rr = sr + dr, cc = sc + dc;
+          while (rr >= 0 && rr < size && cc >= 0 && cc < size) {
+            if (puzzle.grid[rr][cc] !== null) return { rr, cc };
+            rr += dr; cc += dc;
+          }
+          return null;
+        };
+        if (dir === 'right') {
+          const next = stepToNextNonBlock(r,c,0,1); if (next) { nr = next.rr; nc = next.cc; }
+        } else if (dir === 'left') {
+          const prev = stepToNextNonBlock(r,c,0,-1); if (prev) { nr = prev.rr; nc = prev.cc; }
+        } else if (dir === 'up') {
+          const prev = stepToNextNonBlock(r,c,-1,0); if (prev) { nr = prev.rr; nc = prev.cc; }
+        } else if (dir === 'down') {
+          const next = stepToNextNonBlock(r,c,1,0); if (next) { nr = next.rr; nc = next.cc; }
+        }
+        setSelected({ r: nr, c: nc });
+        setTimeout(() => {
+          if (!gridRef.current) return;
+          const el = gridRef.current.querySelector(`input[data-r="${nr}"][data-c="${nc}"]`);
+          if (el) el.focus();
+        }, 10);
+      }
+
+      function updateEntry(r,c,val) { setEntries(prev => { const copy = prev.map(row => row.slice()); copy[r][c] = val ? val[0].toUpperCase() : ''; return copy; }); setCheckMode(null); }
+      function onClickCell(r,c) { setSelected({ r, c }); setActiveDir('across'); setTimeout(() => { if (!gridRef.current) return; const el = gridRef.current.querySelector(`input[data-r="${r}"][data-c="${c}"]`); if (el) el.focus(); }, 10); }
+      function numberForWord(p) { return wordMap[`${p.row},${p.col},${p.dir}`] || null; }
+      function focusWord(p) { setSelected({ r: p.row, c: p.col }); setActiveDir(p.dir); setTimeout(() => { if (!gridRef.current) return; const el = gridRef.current.querySelector(`input[data-r="${p.row}"][data-c="${p.col}"]`); if (el) el.focus(); }, 10); }
+      function checkAnswers() { setCheckMode('checked'); }
+      function revealSolution() { if (!puzzle) return; const sol = puzzle.grid.map(row => row.map(cell => (cell === null ? null : cell))); setEntries(sol); setCheckMode('revealed'); }
+
+      const acrossList = puzzle ? puzzle.placed.filter(p => p.dir === 'across').sort((a,b)=>(numberForWord(a)||0)-(numberForWord(b)||0)) : [];
+      const downList = puzzle ? puzzle.placed.filter(p => p.dir === 'down').sort((a,b)=>(numberForWord(a)||0)-(numberForWord(b)||0)) : [];
+
+      return (
+        <div className="app">
+          <header className="topbar">
+            <h1>Team Crossword</h1>
+            <div className="top-actions">
+              <button onClick={parseAndGenerate} className="primary">Generate</button>
+              <button onClick={checkAnswers} disabled={!puzzle}>Check answers</button>
+              <button onClick={revealSolution} disabled={!puzzle}>Reveal solution</button>
+            </div>
+          </header>
+
+          <main className="main">
+            <section className="left">
+              <label>Input (JSON array of strings or objects)</label>
+              <textarea value={inputText} onChange={e => setInputText(e.target.value)} rows={10}/>
+              <p className="hint">Examples: "Alice Johnson, Senior Dev, ext 4421" or {" + '"name":"Dan","title":"Designer"' + "}"}</p>
+            </section>
+
+            <section className="right">
+              {!puzzle && <div className="placeholder">Paste your data and click Generate.</div>}
+              {puzzle && (
+                <>
+                  <div className="grid-area" ref={gridRef}>
+                    <CrosswordGrid
+                      puzzle={puzzle}
+                      entries={entries}
+                      numbering={numbering}
+                      selected={selected}
+                      activeDir={activeDir}
+                      onKeyDownCell={onKeyDownCell}
+                      onClickCell={onClickCell}
+                      updateEntry={updateEntry}
+                      checkMode={checkMode}
+                    />
+                  </div>
+
+                  <div className="clues-area">
+                    <div className="clues-column">
+                      <h3>Across</h3>
+                      <ol>
+                        {acrossList.map(p => (
+                          <li key={`a-${p.row}-${p.col}`} className="clue-item" onClick={() => focusWord(p)}>
+                            <strong>{numberForWord(p) || '-'}</strong> {p.answer.length} letters — {p.clue || '(no clue)'}
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                    <div className="clues-column">
+                      <h3>Down</h3>
+                      <ol>
+                        {downList.map(p => (
+                          <li key={`d-${p.row}-${p.col}`} className="clue-item" onClick={() => focusWord(p)}>
+                            <strong>{numberForWord(p) || '-'}</strong> {p.answer.length} letters — {p.clue || '(no clue)'}
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  </div>
+                </>
+              )}
+            </section>
+          </main>
+
+          <footer className="footer">
+            <small>Keyboard: Arrows, Enter (toggle direction), Backspace to erase, typing moves forward.</small>
+          </footer>
+        </div>
+      );
+    }
+
+    function CrosswordGrid({ puzzle, entries, numbering, selected, activeDir, onKeyDownCell, onClickCell, updateEntry, checkMode }) {
+      if (!puzzle || !entries) return null;
+      const size = puzzle.size;
+
+      return (
+        <table className="crossword">
+          <tbody>
+            {puzzle.grid.map((row, r) => (
+              <tr key={r}>
+                {row.map((cell, c) => {
+                  if (cell === null) {
+                    return <td key={c} className="block"></td>;
+                  }
+                  const isSelected = selected.r === r && selected.c === c;
+                  const number = numbering[`${r},${c}`];
+                  const val = entries[r][c] || '';
+                  let statusClass = '';
+                  if (checkMode === 'checked') {
+                    if (val === '') statusClass = 'empty';
+                    else if (val === cell) statusClass = 'correct';
+                    else statusClass = 'incorrect';
+                  } else if (checkMode === 'revealed') {
+                    statusClass = 'revealed';
+                  }
+
+                  return (
+                    <td key={c} className={`cell ${isSelected ? 'selected' : ''} ${statusClass}`} onClick={() => onClickCell(r,c)}>
+                      {number ? <div className="cell-number">{number}</div> : null}
+                      <input
+                        data-r={r}
+                        data-c={c}
+                        value={val}
+                        maxLength={1}
+                        onChange={e => updateEntry(r, c, e.target.value ? e.target.value[0].toUpperCase() : '')}
+                        onKeyDown={e => onKeyDownCell(e, r, c)}
+                        className="cell-input"
+                        autoComplete="off"
+                        spellCheck="false"
+                        aria-label={`row ${r+1} col ${c+1}`}
+                      />
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
